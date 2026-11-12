@@ -1,0 +1,52 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write README.md
+/:
+  en: 759be36d48363bd8
+  zh: 99577577ac0e36d3
+/winterhuan-dsh-new-api:
+  en: 0a9ec9eed758944c
+  zh: 8dcddca12b7cc66d
+/winterhuan-dsh-new-api/summary:
+  en: 01ee916345c052ed
+  zh: a8f1257835459846
+/winterhuan-dsh-new-api/table-of-contents:
+  en: 502d1522d1030597
+  zh: 8a1b7850f68e41f1
+/winterhuan-dsh-new-api/use-this-package:
+  en: 985cf27c54fe0e0a
+  zh: b875ef695639a286
+/winterhuan-dsh-new-api/authentication-and-check-ins:
+  en: b7c205b2127fca4a
+  zh: f05e212f205194c3
+/winterhuan-dsh-new-api/data-and-access:
+  en: 2227e84eeb39fdda
+  zh: f927e18cbc94a1a8
+/winterhuan-dsh-new-api/understand-the-implementation:
+  en: 9e368d088508ad83
+  zh: 0c2df281ef0e1026
+/winterhuan-dsh-new-api/further-exploration:
+  en: 344d898eb35df05d
+  zh: 4cb3b60af7a98f8a
+/winterhuan-dsh-new-api/model-experience:
+  en: 215e7ba838619b7b
+  zh: 215e7ba838619b7b
+/winterhuan-dsh-new-api/model-experience/site-operations:
+  en: cd78af4806685c0a
+  zh: 9a627c52465d6d02
+/winterhuan-dsh-new-api/model-experience/site-operations/what-the-model-sees:
+  en: 5e23edc64462f5a2
+  zh: 5b32f1c80de56094
+/winterhuan-dsh-new-api/model-experience/site-operations/token-effect:
+  en: c043cef11daae679
+  zh: aab59940efbce1e2
+/winterhuan-dsh-new-api/model-experience/site-operations/kv-cache-effect:
+  en: ce11fd4b6f25ed34
+  zh: 08cbb0b010238099
+/winterhuan-dsh-new-api/known-limitations-and-deferred-work:
+  en: 0fc3c727e0a017a0
+  zh: b4d598e047e207a2
+/winterhuan-dsh-new-api/known-limitations-and-deferred-work/dev-note:
+  en: e67f633dc6fe7773
+  zh: 4545eda38a068f8d

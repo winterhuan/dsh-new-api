@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-new-api
+      name: '@winterhuan/dsh-new-api'

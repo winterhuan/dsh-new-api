@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="New API relay manager">
+  <rect width="64" height="64" rx="14" fill="#2f6fed"/>
+  <rect x="14" y="19" width="36" height="31" rx="6" fill="none" stroke="#ffffff" stroke-width="3.4"/>
+  <path d="M14 28h36" stroke="#ffffff" stroke-width="3.4"/>
+  <path d="M22 14.5v8M42 14.5v8" stroke="#ffffff" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M24 38.5l5.2 5.2 11-11" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
