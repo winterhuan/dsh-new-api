@@ -860,9 +860,15 @@ window.__ModuleLoader__.load({
         if (globalBusy) return;
         setGlobalBusy('refresh');
         try {
-          const next = await call('getState', null);
-          setData(next);
-          setFlash({ kind: 'success', text: t('flashRefreshAll') });
+          const next = await call('refreshAll', null);
+          if (next && Array.isArray(next.sites)) {
+            setData((prev) => (prev ? { ...prev, sites: next.sites } : prev));
+          }
+          const failed = next && Array.isArray(next.results)
+            ? next.results.find((item) => item.status === 'failed')
+            : null;
+          if (failed) setFlash({ kind: 'error', text: t('refreshFailed') + (failed.message || failed.name || '') });
+          else setFlash({ kind: 'success', text: t('flashRefreshAll') });
         } catch (err) {
           setFlash({ kind: 'error', text: t('refreshFailed') + errText(err) });
         } finally {

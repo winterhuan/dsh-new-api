@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Manage New API / One API relay sites from Settings → New API console in DSH Web. View account balances, separate check-in wallets and daily check-in status. Add sites with an access token or a session cookie, then check in manually or on a daily schedule. This private development bundle targets DSH `0.2.2-rc.1`; site credentials are stored in plaintext on the Host.
+Manage New API / One API relay sites from Settings → New API console in DSH Web. View account balances, separate check-in wallets and daily check-in status. Add sites with an access token or a session cookie, then check in manually or on a daily schedule. Release `1.0.0-winter.1` targets DSH `0.2.2-rc.1`; site credentials are stored in plaintext on the Host.
 
 ## Table of Contents
 
@@ -27,7 +27,15 @@ Manage New API / One API relay sites from Settings → New API console in DSH We
 <a id="use-this-package"></a>
 ## Use this package
 
-Build the bundle and install it into an isolated Web profile. Use Node.js `^22.19.0 || >=24.0.0`, pnpm `11.7.0` and DSH `0.2.2-rc.1`. Run these commands from the plugin repository:
+Install the fixed Git release into a DSH `0.2.2-rc.1` profile:
+
+```sh
+dsh plugin --profile web add github:winterhuan/dsh-new-api#v1.0.0-winter.1
+```
+
+Restart the profile's Host and hard-refresh the browser, then open Settings → New API console. Remove the profile layer with `dsh plugin --profile web remove @winterhuan/dsh-new-api`; removal retains stored site data.
+
+For local development, use Node.js `^22.19.0 || >=24.0.0` and pnpm `11.7.0`. Build the bundle in the plugin repository:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -57,7 +65,7 @@ Start the development server and open its printed URL:
 dsh --profile new-api-dev --host 127.0.0.1 --port 0 --no-open
 ```
 
-Open Settings → New API console. Add a site to see its balance and check-in status; the form also controls participation in automatic check-ins. Build again, restart this development process and hard-refresh the browser after source changes. Remove the profile layer with `dsh plugin --profile new-api-dev remove @winterhuan/dsh-new-api`; removal retains stored site data.
+Open Settings → New API console. Add a site to see its balance and check-in status; the form also controls participation in automatic check-ins. Build again, restart this development process and hard-refresh the browser after source changes. Remove the development layer with `dsh plugin --profile new-api-dev remove @winterhuan/dsh-new-api`.
 
 -----
 
@@ -84,7 +92,9 @@ The plugin checks today's status before posting to `/api/user/checkin`. It can f
 
 Sites, schedule settings and check-in results are stored in `$DSH_HOME/dsh-new-api/sites.json`, defaulting to `~/.dsh/dsh-new-api/sites.json`. This directory is shared by profiles using the same `DSH_HOME`. Tokens and cookies are stored in plaintext; browser and tool results expose masked values.
 
-The browser calls `POST /dsh-new-api/api` with `X-DSH-New-API: 1`. The Host rejects cross-site browser requests and mismatched origins. This route has no separate login check: use a loopback development server, and protect access to the Host if exposing it through a network or proxy.
+If this file is unreadable or invalid JSON, the console refuses reads and writes until you repair or restore it; it does not replace the file with an empty state.
+
+The browser calls `POST /dsh-new-api/api` with `X-DSH-New-API: 1`. The route delegates Host/Origin checks and browser-session authentication to DSH's connection service, so anonymous and cross-site requests are rejected. Network and reverse-proxy deployments must still configure DSH for the public authority they expose.
 
 -----
 
@@ -94,11 +104,11 @@ The browser calls `POST /dsh-new-api/api` with `X-DSH-New-API: 1`. The Host reje
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The [bundle patch](cordis.patch.yml) mounts the Host plugin. The [Host entry](src/index.js) owns the JSON store, HTTP operations and scheduler, requiring `webServer` and `timer`. It registers `newapi_sites` when its mounting context provides the optional `tools` service. The [Client entry](src/client.js) registers a localized settings section and sends operations to the Host route.
+The [bundle patch](cordis.patch.yml) mounts the Host plugin. The [Host entry](src/index.js) owns the JSON store, HTTP operations and scheduler, requiring `webServer`, `timer` and `connection`. It registers `newapi_sites` when its mounting context provides the optional `tools` service. The [Client entry](src/client.js) registers a localized settings section and sends operations to the Host route.
 
 The source is imported from `newapi-manager.zip`, package `@local/newapi-manager@1.0.0`. The archive contains self-contained JavaScript, an icon and locale metadata; it supplies no TypeScript source or source maps. Maintain JavaScript under `src/`. `typecheck` checks syntax only. The build copies the browser module to committed `dist/client.js`, so an installable Git checkout requires no lifecycle build.
 
-Tests use private temporary data directories and a loopback New API fixture. They cover balance conversion, zero wallets, one accepted check-in, persisted settings and deletion, credential masking, request rejection, and client registration. They do not contact real relay sites.
+Tests use private temporary data directories and loopback fixtures. They exercise storage failures, authenticated request admission, quota refresh, account-switch races and core site operations without contacting real relay sites.
 
 </details>
 

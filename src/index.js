@@ -11,16 +11,15 @@
  *  - "cookie": legacy New API / One API (0.x) needs `Cookie: session=<sid>`
  *    AND `New-Api-User: <numeric id>`.
  *
- * The route is same-origin only: it requires a custom header (so a cross-site
- * form/fetch without CORS preflight cannot reach it) and checks Origin when the
- * browser sends one.
+ * The route requires the authenticated DSH browser session and a custom header,
+ * so cross-site forms and unauthenticated callers cannot reach stored secrets.
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-export const inject = ['webServer', 'timer']
+export const inject = ['webServer', 'timer', 'connection']
 
 const PLUGIN = 'dsh-new-api'
 const ROUTE_PATH = '/dsh-new-api/api'
@@ -279,22 +278,28 @@ class Store {
     this.state = { version: 1, settings: normalizeSettings({ ...DEFAULT_SETTINGS }), sites: [] }
     this.writeQueue = Promise.resolve()
     this.ready = this.load()
+    void this.ready.catch(() => {})
   }
 
   async load() {
     try {
       const text = await readFile(this.file, 'utf8')
       const parsed = JSON.parse(text)
-      if (isPlainObject(parsed)) {
-        this.state.settings = normalizeSettings({ ...DEFAULT_SETTINGS, ...(isPlainObject(parsed.settings) ? parsed.settings : {}) })
-        if (Array.isArray(parsed.sites)) this.state.sites = parsed.sites.map(sanitizeStoredSite).filter(Boolean)
+      if (!isPlainObject(parsed)) throw new Error('根数据必须是 JSON 对象')
+      const rawSites = parsed.sites === undefined ? [] : parsed.sites
+      if (!Array.isArray(rawSites)) throw new Error('sites 必须是数组')
+      const sites = rawSites.map(sanitizeStoredSite)
+      if (sites.some(site => site === null)) throw new Error('sites 包含无效站点记录')
+      this.state = {
+        version: 1,
+        settings: normalizeSettings({ ...DEFAULT_SETTINGS, ...(isPlainObject(parsed.settings) ? parsed.settings : {}) }),
+        sites,
       }
     } catch (error) {
-      if (error && error.code !== 'ENOENT') {
-        console.error(`[${PLUGIN}] 读取站点数据失败 ${this.file}:`, error.message || error)
-      }
+      if (error && error.code === 'ENOENT') return
+      console.error(`[${PLUGIN}] 读取站点数据失败 ${this.file}:`, error.message || error)
+      throw new Error('站点数据读取失败，请修复或恢复 sites.json 后重试', { cause: error })
     }
-    normalizeSettings(this.state.settings)
   }
 
   persist() {
@@ -305,10 +310,13 @@ class Store {
       await writeFile(temporary, snapshot, 'utf8')
       await rename(temporary, this.file)
     }
-    this.writeQueue = this.writeQueue.then(write, write).catch((error) => {
+    const pending = this.writeQueue.then(write, write)
+    const reported = pending.catch((error) => {
       console.error(`[${PLUGIN}] 保存站点数据失败:`, error.message || error)
+      throw new Error('保存站点数据失败，请检查数据目录', { cause: error })
     })
-    return this.writeQueue
+    this.writeQueue = reported.catch(() => {})
+    return reported
   }
 }
 
@@ -766,6 +774,20 @@ function createOperations(store) {
   const inFlight = new Map()
   let schedulerBusy = false
 
+  function checkInIdentity(site) {
+    return JSON.stringify([
+      site.baseUrl,
+      site.type,
+      site.authMode,
+      site.token,
+      site.cookie,
+      site.userId,
+      site.checkInPath,
+      site.refreshToken,
+      site.tokenExpiresAt,
+    ])
+  }
+
   function settings() {
     return store.state.settings
   }
@@ -825,11 +847,14 @@ function createOperations(store) {
   }
 
   async function recordCheckIn(site) {
-    const result = await performCheckIn(site, settings())
+    const identity = checkInIdentity(site)
+    const working = structuredClone(site)
+    const currentSettings = { ...settings() }
+    const result = await performCheckIn(working, currentSettings)
     const date = result.serverDate || localDate()
-    const previous = site.last && site.last.date === date ? site.last : null
+    const previous = working.last && working.last.date === date ? working.last : null
     if (result.status === 'success' || result.status === 'already') {
-      site.last = {
+      working.last = {
         date,
         status: result.status,
         message: result.message,
@@ -837,9 +862,9 @@ function createOperations(store) {
         quotaAwarded: result.quotaAwarded ?? null,
         attempts: (previous ? previous.attempts || 1 : 0) + 1,
       }
-      site.lastError = null
+      working.lastError = null
     } else {
-      site.last = {
+      working.last = {
         date,
         status: result.status,
         message: result.message,
@@ -847,24 +872,30 @@ function createOperations(store) {
         quotaAwarded: null,
         attempts: (previous ? previous.attempts || 1 : 0) + 1,
       }
-      site.lastError = null
-      if (result.status === 'failed') site.lastError = result.message
-      else site.lastError = null
+      working.lastError = result.status === 'failed' ? result.message : null
     }
-    site.updatedAt = nowIso()
+    working.updatedAt = nowIso()
     try {
-      await refreshQuota(site, settings())
+      await refreshQuota(working, currentSettings)
     } catch (error) {
-      if (result.status === 'failed') site.lastError = result.message
-      else if (!site.lastError) site.lastError = `额度刷新失败：${error.message}`
+      if (result.status === 'failed') working.lastError = result.message
+      else if (!working.lastError) working.lastError = `额度刷新失败：${error.message}`
     }
-    return { site, result }
+    const current = store.state.sites.find(candidate => candidate.id === site.id)
+    if (!current || checkInIdentity(current) !== identity) {
+      return { site: current || working, result, discarded: true }
+    }
+    for (const key of ['info', 'userId', 'checkInPath', 'last', 'lastError', 'quota', 'walletPath', 'walletProbeAt', 'updatedAt']) {
+      current[key] = working[key]
+    }
+    return { site: current, result, discarded: false }
   }
 
   function runCheckIn(site) {
-    if (inFlight.has(site.id)) return inFlight.get(site.id)
-    const task = recordCheckIn(site).finally(() => inFlight.delete(site.id))
-    inFlight.set(site.id, task)
+    const key = `${site.id}\n${checkInIdentity(site)}`
+    if (inFlight.has(key)) return inFlight.get(key)
+    const task = recordCheckIn(site).finally(() => inFlight.delete(key))
+    inFlight.set(key, task)
     return task
   }
 
@@ -930,17 +961,21 @@ function createOperations(store) {
 
   async function updateSite(payload) {
     await store.ready
-    const site = requireSite(payload.id)
+    const index = store.state.sites.findIndex(candidate => candidate.id === payload.id)
+    if (index < 0) throw new Error('站点不存在')
+    const previous = store.state.sites[index]
+    const site = structuredClone(previous)
+    let baseUrlChanged = false
     if (payload.name !== undefined) site.name = String(payload.name ?? '').trim() || hostnameOf(site.baseUrl)
     if (payload.baseUrl !== undefined) {
       const baseUrl = normalizeBaseUrl(payload.baseUrl)
       if (baseUrl !== site.baseUrl) {
+        baseUrlChanged = true
         site.baseUrl = baseUrl
         site.quota = null
         site.info = null
         site.walletPath = ''
         site.walletProbeAt = ''
-        quotaUnitCache.delete(baseUrl)
       }
     }
     const credentialsChanged = applyCredential(site, payload)
@@ -966,7 +1001,15 @@ function createOperations(store) {
         site.lastError = `凭据验证失败：${error.message}`
       }
     }
-    await store.persist()
+    if (store.state.sites[index] !== previous) throw new Error('站点已被其他操作修改，请重试')
+    store.state.sites[index] = site
+    try {
+      await store.persist()
+    } catch (error) {
+      if (store.state.sites[index] === site) store.state.sites[index] = previous
+      throw error
+    }
+    if (baseUrlChanged) quotaUnitCache.delete(previous.baseUrl)
     return { site: siteView(site) }
   }
 
@@ -1011,9 +1054,7 @@ function createOperations(store) {
     return { results, sites: store.state.sites.map(siteView) }
   }
 
-  async function refreshSite(payload) {
-    await store.ready
-    const site = requireSite(payload.id)
+  async function refreshSiteState(site) {
     if (!site.token && !site.cookie) throw new Error('该站点尚未配置凭据')
     try {
       const { info } = await probeStatus(site, settings())
@@ -1024,8 +1065,50 @@ function createOperations(store) {
     await refreshQuota(site, settings())
     site.lastError = null
     site.updatedAt = nowIso()
-    await store.persist()
+  }
+
+  async function refreshSite(payload) {
+    await store.ready
+    const index = store.state.sites.findIndex(candidate => candidate.id === payload.id)
+    if (index < 0) throw new Error('站点不存在')
+    const previous = store.state.sites[index]
+    const site = structuredClone(previous)
+    await refreshSiteState(site)
+    if (store.state.sites[index] !== previous) throw new Error('站点已被其他操作修改，请重试')
+    store.state.sites[index] = site
+    try {
+      await store.persist()
+    } catch (error) {
+      if (store.state.sites[index] === site) store.state.sites[index] = previous
+      throw error
+    }
     return { site: siteView(site) }
+  }
+
+  async function refreshAll() {
+    await store.ready
+    const previous = store.state.sites
+    const sites = []
+    const results = []
+    for (const current of previous) {
+      const site = structuredClone(current)
+      try {
+        await refreshSiteState(site)
+        results.push({ id: site.id, name: site.name, status: 'success' })
+      } catch (error) {
+        site.lastError = `额度刷新失败：${error.message}`
+        results.push({ id: site.id, name: site.name, status: 'failed', message: error.message })
+      }
+      sites.push(site)
+    }
+    store.state.sites = sites
+    try {
+      await store.persist()
+    } catch (error) {
+      if (store.state.sites === sites) store.state.sites = previous
+      throw error
+    }
+    return { results, sites: sites.map(siteView) }
   }
 
   async function detectSiteAction(payload) {
@@ -1046,26 +1129,33 @@ function createOperations(store) {
     await store.ready
     const patch = isPlainObject(payload.settings) ? payload.settings : isPlainObject(payload) ? payload : {}
     const current = store.state.settings
-    if (patch.autoCheckInEnabled !== undefined) current.autoCheckInEnabled = Boolean(patch.autoCheckInEnabled)
+    const next = { ...current }
+    if (patch.autoCheckInEnabled !== undefined) next.autoCheckInEnabled = Boolean(patch.autoCheckInEnabled)
     if (patch.dailyTime !== undefined) {
       const match = /^(\d{1,2}):(\d{2})$/.exec(String(patch.dailyTime ?? ''))
       if (!match) throw new Error('签到时间格式应为 HH:MM')
       const hours = Number(match[1])
       const minutes = Number(match[2])
       if (hours > 23 || minutes > 59) throw new Error('签到时间超出范围')
-      current.dailyTime = `${pad2(hours)}:${pad2(minutes)}`
+      next.dailyTime = `${pad2(hours)}:${pad2(minutes)}`
     }
     if (patch.jitterMinutes !== undefined) {
       const value = Number(patch.jitterMinutes)
       if (!Number.isFinite(value)) throw new Error('随机延迟无效')
-      current.jitterMinutes = Math.max(0, Math.min(720, Math.round(value)))
+      next.jitterMinutes = Math.max(0, Math.min(720, Math.round(value)))
     }
     if (patch.requestTimeoutMs !== undefined) {
       const value = Number(patch.requestTimeoutMs)
-      if (Number.isFinite(value)) current.requestTimeoutMs = Math.max(5_000, Math.min(120_000, Math.round(value)))
+      if (Number.isFinite(value)) next.requestTimeoutMs = Math.max(5_000, Math.min(120_000, Math.round(value)))
     }
-    await store.persist()
-    return { settings: { ...current } }
+    store.state.settings = next
+    try {
+      await store.persist()
+    } catch (error) {
+      if (store.state.settings === next) store.state.settings = current
+      throw error
+    }
+    return { settings: { ...next } }
   }
 
   async function schedulerTick() {
@@ -1128,6 +1218,8 @@ function createOperations(store) {
         return checkInAll()
       case 'refreshSite':
         return refreshSite(input)
+      case 'refreshAll':
+        return refreshAll()
       case 'detectSite':
         return detectSiteAction(input)
       case 'saveSettings':
@@ -1173,7 +1265,13 @@ function sendJson(response, status, value) {
   response.end(body)
 }
 
-function createRouteHandler(operations) {
+function routeRejection(ctx, request) {
+  const connection = ctx.get('connection')
+  if (typeof connection?.requestRejection !== 'function') return 403
+  return connection.requestRejection({ headers: request.headers })
+}
+
+function createRouteHandler(ctx, operations) {
   return async function handle(request, response) {
     try {
       if (request.method !== 'POST') {
@@ -1184,18 +1282,10 @@ function createRouteHandler(operations) {
         sendJson(response, 403, { ok: false, error: 'Forbidden' })
         return
       }
-      if (String(request.headers['sec-fetch-site'] ?? '') === 'cross-site') {
-        sendJson(response, 403, { ok: false, error: 'Forbidden' })
+      const rejection = routeRejection(ctx, request)
+      if (rejection) {
+        sendJson(response, rejection, { ok: false, error: rejection === 401 ? 'Unauthorized' : 'Forbidden' })
         return
-      }
-      const origin = request.headers.origin
-      if (origin) {
-        const protocol = request.socket && request.socket.encrypted ? 'https' : 'http'
-        const expected = `${protocol}://${request.headers.host ?? ''}`
-        if (origin !== expected) {
-          sendJson(response, 403, { ok: false, error: 'Forbidden origin' })
-          return
-        }
       }
       const raw = await readRequestBody(request)
       let parsed = {}
@@ -1306,7 +1396,7 @@ export function apply(ctx) {
   const operations = createOperations(store)
 
   ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: ROUTE_PATH, handler: createRouteHandler(operations) }),
+    () => ctx.webServer.register({ kind: 'exact', path: ROUTE_PATH, handler: createRouteHandler(ctx, operations) }),
     'dsh-new-api: web route',
   )
 
